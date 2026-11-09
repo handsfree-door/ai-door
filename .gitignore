@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# YOLO model
+*.pt
+
+# Tracking CSV
+data/vision/*.csv
