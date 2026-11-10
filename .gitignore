@@ -224,3 +224,4 @@ __marimo__/
 
 # Tracking CSV
 data/vision/*.csv
+data/vision/raw/
