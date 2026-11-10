@@ -38,7 +38,7 @@ if __name__ == "__main__":
     for traj_id, traj in data.groupby("traj_id"):
         open_time = run_trajectory(traj)
 
-        # 박스가 화면을 꽉 채운 첫 시각 = 사람이 문 앞에 도착한 시각으로 봄
+        # 바운딩박스 높이가 화면의 95%에 도달한 시점 (임시 도착 기준, 카메라 위치에 따라 달라질 수 있음)
         full_times = traj.loc[traj["h"] >= FULL_HEIGHT, "t"]
         arrive_time = full_times.min() if len(full_times) else None
 

@@ -48,8 +48,12 @@ def load_all():
 
     data = pd.concat(frames, ignore_index=True)
 
-    # 파일명 + track_id = 궤적 하나
-    data["traj_id"] = data["file"] + "#" + data["track_id"].astype(str)
+    # 시나리오/파일명#track_id = 궤적 하나 (다른 폴더에 같은 파일명이 있어도 안 겹치게)
+    data["traj_id"] = (
+        data["scenario"] + "/" +
+        data["file"] + "#" +
+        data["track_id"].astype(str)
+    )
 
     # 너무 짧은 조각 버리기
     sizes = data.groupby("traj_id")["frame_id"].transform("size")
