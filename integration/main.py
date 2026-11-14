@@ -2,8 +2,8 @@
 # 판단(rule_baseline) → 명령 → 가짜 문 까지 한 번에 돌려보는 코드
 #
 # 실행 예시 (ai-door 폴더에서)
-#   python integration/main.py data/vision/raw/entry/20261110_181442_tracking.csv
-#   python integration/main.py data/vision/raw/lateral/20261110_150212_tracking.csv --fast
+#   python integration/main.py data/vision/raw/20261114_세미나실/hesitate_back/20261114_154615_tracking.csv
+#   python integration/main.py data/vision/raw/20261114_세미나실/hesitate_enter/20261114_154537_tracking.csv --fast
 
 import sys
 import time
@@ -17,6 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "intent"))  # intent 폴더 코드 불러오기
 
 from rule_baseline import decide, WINDOW_SEC   # noqa: E402
+from door_state import decide_while_open       # noqa: E402
 from fake_door import FakeDoor                 # noqa: E402
 
 TICK_SEC = 0.1     # 0.1초마다 한 번씩 판단
@@ -24,7 +25,7 @@ HOLD_MS = 2000     # 사람이 보이는 동안 2초씩 열림 유지를 연장
 REFRESH_SEC = 0.5  # HOLD 연장 명령을 보내는 간격
 LOST_SEC = 1.0     # 문을 열어준 사람이 1초 동안 안 보이면 지나간 걸로 봄
 TAIL_SEC = 5.0     # CSV가 끝난 뒤에도 5초 더 돌려서 문이 닫히는 것까지 확인
-
+TAILGATE_SEC = 2.0 # 앞사람 때문에 문이 열린 뒤 이 시간 안에 다음 사람이 붙으면 → 강한 경고
 
 def load_csv(path):
     df = pd.read_csv(path)
@@ -46,7 +47,9 @@ def run(path, fast=False):
     history = {}     # track_id → 최근 기록 (t, x, h)
     opened_for = {}  # 문을 열어준 track_id → 마지막으로 보인 시각
     crossed = set()  # 가로지른다고 판단한 track_id (로그 한 번만 찍으려고)
+    staying = set()  # 문 앞에 서 있다고 판단한 track_id (로그 한 번만 찍으려고)
     last_hold = -999.0
+    open_since = None  # 지금 열림이 시작된 시각 (따라옴 간격 계산용)
     events = []      # (시각, 명령) 기록
 
     def send(now, cmd):
@@ -81,10 +84,40 @@ def run(path, fast=False):
                 continue  # 아직 1초치 기록이 안 쌓임
 
             window = pd.DataFrame(list(hist), columns=["t", "x", "h"])
+
+            # 문을 열어준 사람이면: 서 있는지 / 떠나는지 판단
+            if tid in opened_for:
+                motion = decide_while_open(window)
+                if motion == "LEAVING":
+                    log(now, f"판단: ID {tid} 문에서 멀어지는 중 → 이 사람 몫의 열림 해제")
+                    del opened_for[tid]
+                    staying.discard(tid)
+                    if not opened_for:  # 기다리는 다른 사람이 없으면 바로 닫기
+                        send(now, "CLOSE")
+                    continue
+                if motion == "STAY" and tid not in staying:
+                    log(now, f"판단: ID {tid} 문 앞에 서 있음 → 열어 둠")
+                    staying.add(tid)
+                elif motion != "STAY":
+                    staying.discard(tid)
+
             decision = decide(window)
 
+            # 멀어지는 중이면 박스가 커져도 다시 열지 않음 (문 덜컹거림 방지)
+            if decision == "OPEN" and decide_while_open(window) == "LEAVING":
+                decision = "WAIT"
+
             if decision == "OPEN" and tid not in opened_for:
-                log(now, f"판단: ID {tid} 다가오는 중 → 문 열기")
+                others = [o for o, last in opened_for.items() if now - last <= LOST_SEC]
+                if others:
+                    # 앞사람 때문에 이미 열린 문으로 다른 사람이 따라옴
+                    gap = now - open_since
+                    level = 2 if gap < TAILGATE_SEC else 1
+                    log(now, f"판단: ID {tid}가 ID {others[0]} 뒤를 따라옴 (간격 {gap:.1f}초) → 경고 {level}단계")
+                    send(now, f"ALERT {level}")
+                else:
+                    log(now, f"판단: ID {tid} 다가오는 중 → 문 열기")
+                    open_since = now
                 if door.target == 0:
                     send(now, "OPEN")
                 send(now, f"HOLD {HOLD_MS}")
