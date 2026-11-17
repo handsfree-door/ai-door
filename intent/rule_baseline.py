@@ -27,13 +27,23 @@ def decide(window):
     return "WAIT"
 
 
+def get_window(traj, now):
+    # 최근 1초 구간 + 그 직전 한 줄까지 포함 (FPS가 낮아도 1초 전 위치와 비교할 수 있게)
+    past = traj[traj["t"] <= now]
+    older = past[past["t"] <= now - WINDOW_SEC]
+    if older.empty:
+        return None  # 아직 1초치 기록이 안 쌓임
+    start = older["t"].iloc[-1]
+    return past[past["t"] >= start]
+
+
 def run_trajectory(traj):
     # 한 사람의 궤적을 처음부터 한 줄씩 흘려보내면서, 처음 OPEN이 나온 시각을 찾음
     traj = traj.sort_values("t")
     for now in traj["t"]:
-        window = traj[(traj["t"] > now - WINDOW_SEC) & (traj["t"] <= now)]
-        if window["t"].iloc[-1] - window["t"].iloc[0] < WINDOW_SEC * 0.8:
-            continue  # 아직 1초치 기록이 안 쌓였으면 판단 보류
+        window = get_window(traj, now)
+        if window is None:
+            continue
         if decide(window) == "OPEN":
             return now
     return None
