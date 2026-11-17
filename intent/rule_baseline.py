@@ -1,11 +1,18 @@
+import sys
 import pandas as pd
 from load_tracks import load_all, FULL_HEIGHT
 
-# 그래프 보고 정한 첫 기준값 (결과 보고 조정)
+# 지난번(11/10 데이터) 그래프 보고 정한 기준값 그대로 사용
 WINDOW_SEC = 1.0    # 최근 몇 초를 보고 판단할지
 CROSS_DX = 0.3      # 1초 동안 x가 화면 폭의 30% 이상 움직이면 → 가로지름
 APPROACH_DH = 0.08  # 1초 동안 박스 높이가 화면의 8% 이상 커지면 → 다가옴
 NEAR_H = 0.6        # 박스 높이가 화면의 60% 이상일 때만 문을 엶
+
+# 채점 기준
+SHOULD_OPEN = {"entry", "diagonal", "hesitate_enter", "tailgate"}  # 열려야 정답
+SHOULD_NOT_OPEN = {"lateral"}                                      # 안 열려야 정답
+# approach_leave, hesitate_back 은 다가오는 구간이 있어서 열리는 게 정상
+# → 나중에 "얼마나 빨리 닫나"로 따로 평가
 
 
 def decide(window):
@@ -32,8 +39,7 @@ def run_trajectory(traj):
     return None
 
 
-if __name__ == "__main__":
-    data = load_all()
+def evaluate(data):
     rows = []
     for traj_id, traj in data.groupby("traj_id"):
         open_time = run_trajectory(traj)
@@ -46,25 +52,49 @@ if __name__ == "__main__":
         if open_time is not None and arrive_time is not None:
             margin = round(arrive_time - open_time, 2)
 
+        scenario = traj["scenario"].iloc[0]
+        opened = open_time is not None
+        if scenario in SHOULD_OPEN:
+            correct = opened
+        elif scenario in SHOULD_NOT_OPEN:
+            correct = not opened
+        else:
+            correct = None  # 채점 안 함
+
         rows.append({
             "traj_id": traj_id,
-            "scenario": traj["scenario"].iloc[0],
-            "opened": open_time is not None,
+            "session": traj["session"].iloc[0],
+            "scenario": scenario,
+            "test_only": traj["test_only"].iloc[0],
+            "opened": opened,
+            "correct": correct,
             "open_time": open_time,
             "margin_sec": margin,  # 도착 몇 초 전에 열렸는지 (+면 미리 열림)
         })
+    return pd.DataFrame(rows)
 
-    result = pd.DataFrame(rows)
 
-    print("=== 클래스별 문 열림 비율 ===")
-    summary = result.groupby("scenario")["opened"].agg(열린_수="sum", 전체="count")
-    summary["비율"] = (summary["열린_수"] / summary["전체"]).round(2)
-    print(summary)
+if __name__ == "__main__":
+    # 특정 촬영날만 보고 싶으면: python intent/rule_baseline.py 20261114_세미나실
+    sessions = sys.argv[1:] or None
+    result = evaluate(load_all(sessions))
 
-    print("\n=== 정면 진입: 도착 몇 초 전에 열렸나 ===")
-    entry = result[result["scenario"] == "entry"]
-    print(entry[["traj_id", "open_time", "margin_sec"]].to_string(index=False))
+    print("=== 촬영날 · 시나리오별 문 열림 ===")
+    summary = result.groupby(["session", "scenario"]).agg(
+        열린_수=("opened", "sum"), 전체=("opened", "count"))
+    summary["열림_비율"] = (summary["열린_수"] / summary["전체"]).round(2)
+    print(summary.to_string())
 
-    print("\n=== 좌우 이동인데 문이 열린 궤적 (잘못 열림) ===")
-    wrong = result[(result["scenario"] == "lateral") & result["opened"]]
-    print(wrong[["traj_id", "open_time"]].to_string(index=False) if len(wrong) else "없음")
+    graded = result[result["correct"].notna()]
+    print("\n=== 정확도 (열려야 할 때 열림 + 안 열려야 할 때 안 열림) ===")
+    acc = graded.groupby("session")["correct"].agg(맞음="sum", 전체="count")
+    acc["정확도"] = (acc["맞음"] / acc["전체"]).round(3)
+    print(acc.to_string())
+
+    print("\n=== 도착 몇 초 전에 열렸나 (열려야 하는 시나리오, 평균) ===")
+    opened_ok = result[result["scenario"].isin(SHOULD_OPEN) & result["margin_sec"].notna()]
+    print(opened_ok.groupby(["session", "scenario"])["margin_sec"].agg(["mean", "min", "count"]).round(2).to_string())
+
+    print("\n=== 틀린 궤적 ===")
+    wrong = graded[graded["correct"] == False]  # noqa: E712
+    print(wrong[["traj_id", "opened", "open_time"]].to_string(index=False) if len(wrong) else "없음")

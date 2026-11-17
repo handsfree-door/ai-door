@@ -3,21 +3,38 @@ import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RAW_DIR = PROJECT_ROOT / "data" / "vision" / "raw"
+# 폴더 구조: data/vision/raw/<촬영 날짜_장소>/<시나리오>/*.csv
+#   예) data/vision/raw/20261114_세미나실/entry/20261114_150221_tracking.csv
 
-# 폴더 이름 → 정답 라벨
+# 시나리오 폴더 이름 → 정답 라벨
 LABELS = {
-    "entry": "통과",
-    "approach_leave": "지나감",
-    "lateral": "지나감",
+    "entry": "통과",            # 정면 진입
+    "diagonal": "통과",         # 비스듬히 진입
+    "hesitate_enter": "통과",   # 문 앞에서 멈칫 후 들어감
+    "approach_leave": "지나감",  # 다가오다 빠짐
+    "hesitate_back": "지나감",   # 문 앞에서 멈칫 후 돌아감
+    "lateral": "지나감",         # 좌우 이동
+    "tailgate": "따라옴",        # 2명, 뒤에서 따라 들어옴
 }
 
-SKIP_START_SEC = 0.0  # 앞부분 버리기: 시작 위치로 걸어가는 구간
-SKIP_END_SEC = 0.0    # 뒷부분 버리기: 프로그램 끄러 카메라로 다가오는 구간
+# 분석에서 아예 빼는 파일 (데이터 목록 시트에 "분석 제외"로 적은 것)
+EXCLUDE_FILES = {
+    "20261114_151049_tracking.csv",
+    "20261114_151121_tracking.csv",
+}
+
+# 채점에만 쓰고 기준값 정할 때는 안 쓰는 것 (촬영날, 시나리오)
+TEST_ONLY = {
+    ("20261114_세미나실", "diagonal"),
+}
+
+SKIP_START_SEC = 0.0  # 앞부분 버리기 (자동 녹화로 바뀌어서 지금은 0)
+SKIP_END_SEC = 0.0    # 뒷부분 버리기
 MIN_ROWS = 10         # 이보다 짧은 궤적 조각은 버림
 FULL_HEIGHT = 0.95    # 박스 높이가 화면의 95% 이상이면 '꽉 참'으로 표시
 
 
-def load_file(path, scenario):
+def load_file(path, session, scenario):
     df = pd.read_csv(path)
     df = df[df["class"] == "person"].copy()
 
@@ -28,8 +45,10 @@ def load_file(path, scenario):
     df["full"] = df["h"] >= FULL_HEIGHT
 
     df["file"] = path.name
+    df["session"] = session
     df["scenario"] = scenario
     df["label"] = LABELS[scenario]
+    df["test_only"] = (session, scenario) in TEST_ONLY
     return df
 
 
@@ -40,16 +59,23 @@ def trim_file(df):
     return df[(df["elapsed_sec"] >= start) & (df["elapsed_sec"] <= end)]
 
 
-def load_all():
+def load_all(sessions=None):
+    # sessions: 읽을 촬영 폴더 이름 목록. None이면 전부 읽음
     frames = []
-    for scenario in LABELS:
-        for path in sorted((RAW_DIR / scenario).glob("*.csv")):
-            frames.append(trim_file(load_file(path, scenario)))
+    for session_dir in sorted(p for p in RAW_DIR.iterdir() if p.is_dir()):
+        if sessions and session_dir.name not in sessions:
+            continue
+        for scenario in LABELS:
+            for path in sorted((session_dir / scenario).glob("*.csv")):
+                if path.name in EXCLUDE_FILES:
+                    continue
+                frames.append(trim_file(load_file(path, session_dir.name, scenario)))
 
     data = pd.concat(frames, ignore_index=True)
 
-    # 시나리오/파일명#track_id = 궤적 하나 (다른 폴더에 같은 파일명이 있어도 안 겹치게)
+    # 촬영날/시나리오/파일명#track_id = 궤적 하나
     data["traj_id"] = (
+        data["session"] + "/" +
         data["scenario"] + "/" +
         data["file"] + "#" +
         data["track_id"].astype(str)
@@ -66,7 +92,7 @@ def load_all():
 
 if __name__ == "__main__":
     data = load_all()
-    counts = data.groupby("scenario")["traj_id"].nunique()
-    print("클래스별 궤적 수")
-    print(counts)
-    print("전체 궤적 수:", data["traj_id"].nunique())
+    counts = data.groupby(["session", "scenario"])["traj_id"].nunique()
+    print("촬영날 · 시나리오별 궤적 수")
+    print(counts.to_string())
+    print("\n전체 궤적 수:", data["traj_id"].nunique())
