@@ -1,9 +1,4 @@
-# 채원 님 CSV를 실제 시간처럼 흘려보내면서
-# 판단(rule_baseline) → 명령 → 가짜 문 까지 한 번에 돌려보는 코드
-#
-# 실행 예시 (ai-door 폴더에서)
-#   python integration/main.py data/vision/raw/20261114_세미나실/hesitate_back/20261114_154615_tracking.csv
-#   python integration/main.py data/vision/raw/20261114_세미나실/hesitate_enter/20261114_154537_tracking.csv --fast
+# CSV를 실제 시간처럼 흘려보내면서 판단(rule_baseline) → 명령 → 가짜 문 까지 한 번에 돌려보는 코드
 
 import sys
 import time
@@ -17,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "intent"))  # intent 폴더 코드 불러오기
 
 from rule_baseline import decide, WINDOW_SEC   # noqa: E402
-from door_state import decide_while_open       # noqa: E402
+from door_state import decide_while_open, REOPEN_BLOCK_SEC  # noqa: E402
 from fake_door import FakeDoor                 # noqa: E402
 
 TICK_SEC = 0.1     # 0.1초마다 한 번씩 판단
@@ -26,6 +21,19 @@ REFRESH_SEC = 0.5  # HOLD 연장 명령을 보내는 간격
 LOST_SEC = 1.0     # 문을 열어준 사람이 1초 동안 안 보이면 지나간 걸로 봄
 TAIL_SEC = 5.0     # CSV가 끝난 뒤에도 5초 더 돌려서 문이 닫히는 것까지 확인
 TAILGATE_SEC = 2.0 # 앞사람 때문에 문이 열린 뒤 이 시간 안에 다음 사람이 붙으면 → 강한 경고
+
+
+def thin_out(df, fps):
+    # 파이 속도를 흉내 냄: 1/fps초 간격의 프레임만 남김 (모든 사람이 같은 프레임에 찍히므로 frame 기준)
+    gap = 1.0 / fps
+    keep_frames = []
+    last = -999.0
+    for frame_id, t in df.groupby("frame_id")["t"].first().sort_values().items():
+        if t - last >= gap - 1e-6:
+            keep_frames.append(frame_id)
+            last = t
+    return df[df["frame_id"].isin(keep_frames)]
+
 
 def load_csv(path):
     df = pd.read_csv(path)
@@ -40,14 +48,18 @@ def log(now, msg):
     print(f"[{now:6.2f}s] {msg}")
 
 
-def run(path, fast=False):
+def run(path, fast=False, fps=None):
     df = load_csv(path)
+    if fps:
+        df = thin_out(df, fps)
+        print(f"파이 속도 흉내: {fps}fps로 솎아서 실행")
     door = FakeDoor()
 
     history = {}     # track_id → 최근 기록 (t, x, h)
     opened_for = {}  # 문을 열어준 track_id → 마지막으로 보인 시각
     crossed = set()  # 가로지른다고 판단한 track_id (로그 한 번만 찍으려고)
     staying = set()  # 문 앞에 서 있다고 판단한 track_id (로그 한 번만 찍으려고)
+    blocked = {}     # 멀어져서 닫은 track_id → 이 시각 전까지는 다시 안 엶
     last_hold = -999.0
     open_since = None  # 지금 열림이 시작된 시각 (따라옴 간격 계산용)
     events = []      # (시각, 명령) 기록
@@ -78,9 +90,10 @@ def run(path, fast=False):
         # 2) 사람마다 최근 1초 움직임으로 판단
         for tid in seen:
             hist = history[tid]
-            while hist and hist[0][0] < now - WINDOW_SEC:
+            # 1초 전보다 오래된 기록은 버리되, 1초 전에 가장 가까운 한 줄은 남김 (FPS가 낮아도 비교할 수 있게)
+            while len(hist) >= 2 and hist[1][0] <= now - WINDOW_SEC:
                 hist.popleft()
-            if hist[-1][0] - hist[0][0] < WINDOW_SEC * 0.8:
+            if hist[0][0] > now - WINDOW_SEC:
                 continue  # 아직 1초치 기록이 안 쌓임
 
             window = pd.DataFrame(list(hist), columns=["t", "x", "h"])
@@ -92,6 +105,7 @@ def run(path, fast=False):
                     log(now, f"판단: ID {tid} 문에서 멀어지는 중 → 이 사람 몫의 열림 해제")
                     del opened_for[tid]
                     staying.discard(tid)
+                    blocked[tid] = now + REOPEN_BLOCK_SEC
                     if not opened_for:  # 기다리는 다른 사람이 없으면 바로 닫기
                         send(now, "CLOSE")
                     continue
@@ -106,6 +120,8 @@ def run(path, fast=False):
             # 멀어지는 중이면 박스가 커져도 다시 열지 않음 (문 덜컹거림 방지)
             if decision == "OPEN" and decide_while_open(window) == "LEAVING":
                 decision = "WAIT"
+            if decision == "OPEN" and now < blocked.get(tid, -1.0):
+                decision = "WAIT"  # 방금 멀어져서 닫은 사람이면 잠깐 다시 열지 않음
 
             if decision == "OPEN" and tid not in opened_for:
                 others = [o for o, last in opened_for.items() if now - last <= LOST_SEC]
@@ -159,5 +175,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("csv", help="흘려보낼 추적 CSV 경로")
     parser.add_argument("--fast", action="store_true", help="기다리지 않고 빠르게 실행")
+    parser.add_argument("--fps", type=float, help="파이 속도 흉내 (예: 3이면 1초에 3장만 처리)")
     args = parser.parse_args()
-    run(args.csv, fast=args.fast)
+    run(args.csv, fast=args.fast, fps=args.fps)
