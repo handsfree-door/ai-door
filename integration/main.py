@@ -48,12 +48,16 @@ def log(now, msg):
     print(f"[{now:6.2f}s] {msg}")
 
 
-def run(path, fast=False, fps=None):
+def run(path, fast=False, fps=None, port=None):
     df = load_csv(path)
     if fps:
         df = thin_out(df, fps)
         print(f"파이 속도 흉내: {fps}fps로 솎아서 실행")
-    door = FakeDoor()
+    if port:
+        from serial_door import SerialDoor  # 진짜 보드가 있을 때만 불러옴
+        door = SerialDoor(port)
+    else:
+        door = FakeDoor()
 
     history = {}     # track_id → 최근 기록 (t, x, h)
     opened_for = {}  # 문을 열어준 track_id → 마지막으로 보인 시각
@@ -176,5 +180,8 @@ if __name__ == "__main__":
     parser.add_argument("csv", help="흘려보낼 추적 CSV 경로")
     parser.add_argument("--fast", action="store_true", help="기다리지 않고 빠르게 실행")
     parser.add_argument("--fps", type=float, help="파이 속도 흉내 (예: 3이면 1초에 3장만 처리)")
+    parser.add_argument("--port", help="진짜 보드 포트 (예: COM3). 없으면 가짜 문으로 실행")
     args = parser.parse_args()
-    run(args.csv, fast=args.fast, fps=args.fps)
+    if args.port and args.fast:
+        parser.error("진짜 보드로 할 때는 --fast를 빼 주세요 (실제 시간대로 보내야 함)")
+    run(args.csv, fast=args.fast, fps=args.fps, port=args.port)
