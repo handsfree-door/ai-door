@@ -1,4 +1,10 @@
 # 사람 위치를 받아서 OPEN / HOLD / CLOSE / ALERT 명령을 정함
+# main.py(CSV 재생)와 live.py(웹캠 실시간)가 똑같이 이걸 씀
+#
+# 사용법
+#   ctrl = DoorController(door)                                   # door = FakeDoor() 또는 SerialDoor("COM3")
+#   ctrl.step(now, [(track_id, t, x, h), ...])                    # 물품 정보 없이
+#   ctrl.step(now, [(track_id, t, x, h, {"stroller"}), ...])      # 5번째에 확인된 물품 이름들
 
 import sys
 from collections import deque
@@ -17,6 +23,14 @@ REFRESH_SEC = 0.5  # HOLD 연장 명령을 보내는 간격
 LOST_SEC = 1.0     # 문을 열어준 사람이 1초 동안 안 보이면 지나간 걸로 봄
 TAILGATE_SEC = 2.0 # 앞사람 때문에 문이 열린 뒤 이 시간 안에 다음 사람이 붙으면 → 강한 경고
 
+# 물품 동반 (유모차·휠체어·캐리어 등) → 천천히 지나가니까 문을 더 오래 열어 둠
+ITEM_LABELS = {"stroller", "wheelchair", "suitcase", "bicycle", "cardboard"}  # 반영할 물품 (오탐 많은 건 여기서 빼기)
+ITEM_NAMES = {"stroller": "유모차", "wheelchair": "휠체어", "suitcase": "캐리어",
+              "bicycle": "자전거", "cardboard": "택배상자"}
+ITEM_MEMORY_SEC = 3.0  # 마지막으로 물품이 확인된 뒤 이 시간 동안은 '물품 동반'으로 봄
+ITEM_HOLD_MS = 5000    # 물품 동반이면 HOLD 시간 (기본 2000)
+ITEM_LOST_SEC = 3.0    # 물품 동반이면 사람이 안 보이고 이만큼 지나야 닫음 (기본 1초)
+
 
 def log(now, msg):
     print(f"[{now:6.2f}s] {msg}")
@@ -33,6 +47,8 @@ class DoorController:
         self.last_hold = -999.0
         self.open_since = None  # 지금 열림이 시작된 시각 (따라옴 간격 계산용)
         self.events = []      # (시각, 명령) 기록
+        self.item_seen = {}   # track_id → (물품 이름들, 마지막으로 확인된 시각)
+        self.item_logged = set()  # 물품 동반 로그를 이미 찍은 track_id
 
     def send(self, now, cmd):
         if not cmd.startswith("HOLD"):  # HOLD 연장은 자주 보내서 출력 생략
@@ -41,23 +57,29 @@ class DoorController:
         self.events.append((now, cmd))
 
     def step(self, now, people):
-        # people: 이번에 보인 사람들 [(track_id, 찍힌 시각, x, h), ...]  x, h는 0~1로 맞춘 값
+        # people: 이번에 보인 사람들 [(track_id, 찍힌 시각, x, h[, 물품]), ...]  x, h는 0~1로 맞춘 값
         self.door.update(now)
 
-        # 1) 기록 쌓기
+        # 1) 기록 쌓기 (물품 정보가 있으면 같이)
         seen = set()
-        for tid, t, x, h in people:
+        for person in people:
+            tid, t, x, h = person[:4]
             self.history.setdefault(tid, deque()).append((t, x, h))
             seen.add(tid)
+            items = set(person[4]) & ITEM_LABELS if len(person) > 4 else set()
+            if items:
+                self.item_seen[tid] = (items, now)
 
         # 2) 사람마다 최근 1초 움직임으로 판단
         for tid in seen:
             self._judge(now, tid)
 
-        # 3) 문을 열어준 사람이 아직 보이면 열림 유지 연장
-        active = [t for t, last in self.opened_for.items() if now - last <= LOST_SEC]
+        # 3) 문을 열어준 사람이 아직 보이면 열림 유지 연장 (물품 동반이면 더 오래 기다림)
+        active = [t for t, last in self.opened_for.items()
+                  if now - last <= (ITEM_LOST_SEC if self.items_of(t, now) else LOST_SEC)]
         if active and now - self.last_hold >= REFRESH_SEC:
-            self.send(now, f"HOLD {HOLD_MS}")
+            with_item = any(self.items_of(t, now) for t in active)
+            self.send(now, f"HOLD {ITEM_HOLD_MS if with_item else HOLD_MS}")
             self.last_hold = now
 
         # 4) 문을 열어준 사람이 모두 사라지면 닫기
@@ -65,6 +87,19 @@ class DoorController:
             log(now, "판단: 문을 연 사람이 지나감 → 문 닫기")
             self.send(now, "CLOSE")
             self.opened_for.clear()
+
+    def items_of(self, tid, now):
+        # 최근 ITEM_MEMORY_SEC초 안에 확인된 물품 (물품 모델을 매 프레임 안 돌려도 이어서 봄)
+        items, last = self.item_seen.get(tid, (set(), -999.0))
+        return items if now - last <= ITEM_MEMORY_SEC else set()
+
+    def _log_item(self, now, tid):
+        # 문을 열어준 사람이 물품 동반이면 한 번만 로그
+        items = self.items_of(tid, now)
+        if items and tid not in self.item_logged:
+            names = ", ".join(ITEM_NAMES.get(i, i) for i in sorted(items))
+            log(now, f"판단: ID {tid} {names} 동반 → 열림 유지 연장 (HOLD {ITEM_HOLD_MS}ms)")
+            self.item_logged.add(tid)
 
     def _judge(self, now, tid):
         hist = self.history[tid]
@@ -114,7 +149,7 @@ class DoorController:
                 self.open_since = now
             if self.door.target == 0:
                 self.send(now, "OPEN")
-            self.send(now, f"HOLD {HOLD_MS}")
+            self.send(now, f"HOLD {ITEM_HOLD_MS if self.items_of(tid, now) else HOLD_MS}")
             self.last_hold = now
         elif decision == "CROSS" and tid not in self.crossed and tid not in self.opened_for:
             log(now, f"판단: ID {tid} 가로지르는 중 → 안 엶")
@@ -122,6 +157,7 @@ class DoorController:
 
         if decision == "OPEN" or tid in self.opened_for:
             self.opened_for[tid] = now  # 마지막으로 보인 시각 갱신
+            self._log_item(now, tid)
 
     def summary(self):
         print("\n=== 요약 ===")
