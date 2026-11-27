@@ -9,7 +9,7 @@ import serial  # pip install pyserial
 BAUD = 115200
 OPEN_ANGLE = 90
 HIDE_PREFIXES = ("[초음파]",)  # 보드가 계속 보내는 줄은 화면에 안 찍음 (OPEN/CLOSE 로그가 묻혀서)
-
+SHOW_KEYWORDS = ("OPEN", "CLOSE", "HOLD", "미충족", "대기", "서보")  # 숨기는 줄이라도 이 단어가 있으면 보여줌
 
 class SerialDoor:
     def __init__(self, port):
@@ -43,7 +43,7 @@ class SerialDoor:
                 continue
             if line.startswith("STATE"):
                 self.last_state = line
-            elif not line.startswith(HIDE_PREFIXES):
+            elif not line.startswith(HIDE_PREFIXES) or any(k in line for k in SHOW_KEYWORDS):
                 self.log(f"보드: {line}")
 
     def send(self, cmd):
