@@ -100,7 +100,7 @@ def main():
     parser.add_argument("--duration", type=float, help="몇 초 뒤 자동 종료 (없으면 Ctrl+C로 종료)")
     parser.add_argument("--items", action="store_true", help="물품 탐지 켜기 (유모차·휠체어·캐리어·자전거·택배상자)")
     parser.add_argument("--item-models", nargs="+",
-                        default=["models/stroller_best.pt", "models/cardboard_best.pt"],
+                        default=["models/stroller_best.pt"],  # 택배상자 모델은 오탐이 많아 보류 (쓰려면 --item-models로 직접 추가)
                         help="물품 모델 파일들 (파이에서는 NCNN 변환한 폴더)")
     parser.add_argument("--item-imgsz", type=int, default=480, help="물품 모델 입력 크기")
     parser.add_argument("--item-conf", type=float, default=0.5, help="물품 탐지 최소 신뢰도")
