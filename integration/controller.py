@@ -22,6 +22,7 @@ HOLD_MS = 2000     # 사람이 보이는 동안 2초씩 열림 유지를 연장
 REFRESH_SEC = 0.5  # HOLD 연장 명령을 보내는 간격
 LOST_SEC = 1.0     # 문을 열어준 사람이 1초 동안 안 보이면 지나간 걸로 봄
 TAILGATE_SEC = 2.0 # 앞사람 때문에 문이 열린 뒤 이 시간 안에 다음 사람이 붙으면 → 강한 경고
+ALERT_MAX_GAP_SEC = 5.0  # 문이 열리고 이 시간보다 늦게 온 사람은 꼬리물기가 아니라 다음 방문자로 봄 → 경고 안 함
 
 # 물품 동반 (유모차·휠체어·캐리어 등) → 천천히 지나가니까 문을 더 오래 열어 둠
 ITEM_LABELS = {"stroller", "wheelchair", "suitcase", "bicycle", "cardboard"}  # 반영할 물품 (오탐 많은 건 여기서 빼기)
@@ -44,6 +45,7 @@ class DoorController:
         self.crossed = set()  # 가로지른다고 판단한 track_id (로그 한 번만 찍으려고)
         self.staying = set()  # 문 앞에 서 있다고 판단한 track_id (로그 한 번만 찍으려고)
         self.blocked = {}     # 멀어져서 닫은 track_id → 이 시각 전까지는 다시 안 엶
+        self.alerted = set()  # 이미 경고한 track_id (한 사람당 한 번만 경고)
         self.last_hold = -999.0
         self.open_since = None  # 지금 열림이 시작된 시각 (따라옴 간격 계산용)
         self.events = []      # (시각, 명령) 기록
@@ -141,9 +143,13 @@ class DoorController:
             if others:
                 # 앞사람 때문에 이미 열린 문으로 다른 사람이 따라옴
                 gap = now - self.open_since
-                level = 2 if gap < TAILGATE_SEC else 1
-                log(now, f"판단: ID {tid}가 ID {others[0]} 뒤를 따라옴 (간격 {gap:.1f}초) → 경고 {level}단계")
-                self.send(now, f"ALERT {level}")
+                if gap <= ALERT_MAX_GAP_SEC and tid not in self.alerted:
+                    level = 2 if gap < TAILGATE_SEC else 1
+                    log(now, f"판단: ID {tid}가 ID {others[0]} 뒤를 따라옴 (간격 {gap:.1f}초) → 경고 {level}단계")
+                    self.send(now, f"ALERT {level}")
+                    self.alerted.add(tid)
+                elif tid not in self.alerted:
+                    log(now, f"판단: ID {tid} 열린 문으로 다가옴 (간격 {gap:.1f}초) → 다음 방문자로 보고 경고 안 함")
             else:
                 log(now, f"판단: ID {tid} 다가오는 중 → 문 열기")
                 self.open_since = now
