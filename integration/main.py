@@ -62,7 +62,8 @@ def run(path, fast=False, fps=None, port=None):
         if not fast:
             time.sleep(TICK_SEC)
         now = round(now + TICK_SEC, 2)
-
+    if hasattr(door, "close"):
+        door.close()
     print("\n파일:", Path(path).name)
     ctrl.summary()
 
