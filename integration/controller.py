@@ -154,8 +154,9 @@ class DoorController:
                 log(now, f"판단: ID {tid} 다가오는 중 → 문 열기")
                 self.open_since = now
             if self.door.target == 0:
-                self.send(now, "OPEN")
-            self.send(now, f"HOLD {ITEM_HOLD_MS if self.items_of(tid, now) else HOLD_MS}")
+                self.send(now, "OPEN")  # OPEN 바로 뒤에 HOLD를 붙여 보내면 보드가 열기를 시작 안 해서, 첫 HOLD는 0.5초 뒤 연장 때 보냄
+            else:
+                self.send(now, f"HOLD {ITEM_HOLD_MS if self.items_of(tid, now) else HOLD_MS}")
             self.last_hold = now
         elif decision == "CROSS" and tid not in self.crossed and tid not in self.opened_for:
             log(now, f"판단: ID {tid} 가로지르는 중 → 안 엶")
