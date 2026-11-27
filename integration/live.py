@@ -24,6 +24,7 @@ from fake_door import FakeDoor
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "vision"))  # 채원 님 object_association.py 불러오기
 SAVE_DIR = PROJECT_ROOT / "data" / "vision" / "raw" / "_live"  # --save 하면 여기에 CSV 저장
+BASE_ITEMS = {1: "bicycle", 28: "suitcase"}  # 기본 YOLO가 원래 아는 물품 → 사람 찾을 때 같이 찾음 (물품 모델에서는 안 씀)
 CSV_COLUMNS = ["timestamp", "elapsed_sec", "frame_id", "track_id", "class",
                "center_x", "center_y", "width", "height", "confidence", "frame_w", "frame_h", "items"]
 
@@ -41,7 +42,7 @@ class ItemDetector:
             labels = {}
             for idx, name in model.names.items():
                 label = str(name).split("-", 1)[-1].lower()  # "3-stroller" → "stroller"
-                if label in ITEM_LABELS:
+                if label in ITEM_LABELS and label not in BASE_ITEMS.values():  # 캐리어·자전거는 기본 YOLO 담당
                     labels[idx] = label
             print(f"물품 모델: {path} → {sorted(labels.values())}")
             self.models.append((model, labels, Path(path).stem))
@@ -49,13 +50,13 @@ class ItemDetector:
         self.history = defaultdict(lambda: deque(maxlen=window))  # (사람 ID, 물품) → 최근 연결 여부
         self.count = 0
 
-    def run(self, frame, people_boxes):
+    def run(self, frame, people_boxes, base_found=()):
         # people_boxes: [{"track_id": 1, "bbox_xyxy": [x1, y1, x2, y2]}, ...]
         # 반환: {사람 ID: {확인된 물품 이름들}}  (이번 프레임에 물품 모델을 안 돌렸으면 빈 dict)
         self.count += 1
         if (self.count - 1) % self.every != 0:
             return {}
-        found = []
+        found = list(base_found)  # 기본 YOLO가 찾은 캐리어·자전거
         for model, labels, name in self.models:
             result = model.predict(frame, imgsz=self.imgsz, conf=self.conf, verbose=False)[0]
             if result.boxes is None:
@@ -134,7 +135,7 @@ def main():
 
     def track(frame):
         return model.track(frame, persist=True, tracker="bytetrack.yaml",
-                           classes=[0], imgsz=args.imgsz, verbose=False)[0]
+                           classes=[0] + (list(BASE_ITEMS) if items else []), imgsz=args.imgsz, verbose=False)[0]
 
     print("모델 준비 중...")
     ok, frame = cap.read()
@@ -162,18 +163,23 @@ def main():
 
             # 이번 프레임에 보인 사람들
             found = []  # (ID, cx, cy, bw, bh, conf)
+            base_found = []  # 기본 YOLO가 찾은 캐리어·자전거
             boxes = result.boxes
             if boxes is not None and boxes.id is not None:
-                for (cx, cy, bw, bh), tid, conf in zip(boxes.xywh.tolist(), boxes.id.int().tolist(),
-                                                       boxes.conf.tolist()):
-                    found.append((tid, cx, cy, bw, bh, conf))
+                for (cx, cy, bw, bh), tid, conf, cls in zip(boxes.xywh.tolist(), boxes.id.int().tolist(),
+                                                            boxes.conf.tolist(), boxes.cls.int().tolist()):
+                    if cls == 0:
+                        found.append((tid, cx, cy, bw, bh, conf))
+                    elif conf >= args.item_conf:
+                        base_found.append(items.Detection(BASE_ITEMS[cls], conf,
+                                                          (cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2), "yolo"))
 
             # 물품 탐지: 사람마다 확인된 물품 이름들
             person_items = {}
             if items and found:
                 boxes_xyxy = [{"track_id": tid, "bbox_xyxy": [cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2]}
                               for tid, cx, cy, bw, bh, _ in found]
-                person_items = items.run(frame, boxes_xyxy)
+                person_items = items.run(frame, boxes_xyxy, base_found)
 
             # 판단으로 넘기기 → (ID, 시각, x, h, 물품)
             people = []
