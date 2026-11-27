@@ -152,7 +152,10 @@ def main():
             if not ok:
                 print("카메라 읽기 끝")
                 break
-            now = time.time() - start
+            if args.camera.isdigit():
+                now = time.time() - start
+            else:
+                now = frame_id / (cap.get(cv2.CAP_PROP_FPS) or 30)  # 영상 파일이면 영상 속 시간 기준 (처리가 느려도 실제 속도로 판단)
             frame_id += 1
             result = track(frame)
             frame_h, frame_w = frame.shape[:2]
@@ -202,6 +205,8 @@ def main():
                     if carried:
                         cv2.putText(view, "+" + ",".join(sorted(carried)), (int(cx - bw / 2), int(cy + bh / 2) - 8),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 150, 0), 2)
+                if view.shape[1] > 960:  # 영상이 크면 (1080p 등) 화면에 맞게 줄여서 보여주기 (탐지에는 영향 없음)
+                    view = cv2.resize(view, (960, int(view.shape[0] * 960 / view.shape[1])))
                 cv2.imshow("live", view)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
